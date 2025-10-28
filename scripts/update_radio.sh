@@ -44,16 +44,6 @@ get_current_config() {
     local timestamp=$(date +%s)
     local signature=$(generate_hmac_signature "GET" "/config/$field" "" "$timestamp")
 
-    # Output to file for debugging
-    echo "Signature: $signature" > debug.txt
-    echo "Timestamp: $timestamp" >> debug.txt
-    echo "Field: $field" >> debug.txt
-    echo "HMAC: $HMAC" >> debug.txt
-    echo "Message: $message" >> debug.txt
-    echo "Body: $body" >> debug.txt
-    echo "HTTP Code: $http_code" >> debug.txt
-    echo "Response: $response" >> debug.txt
-    
     # Make GET request to fetch current config for specific field
     local response=$(curl -s -w "\n%{http_code}" \
         -H "x-signature: $signature" \
@@ -67,10 +57,8 @@ get_current_config() {
     if [ "$http_code" -eq 200 ]; then
         echo "$body"
     elif [ "$http_code" -eq 400 ]; then
-        dialog --clear --stdout \
-            --title "Error" \
-            --msgbox "Configuration field '$field' not found." 8 50
-        return 1
+        # Field doesn't exist, return empty value instead of erroring
+        echo '{"field": "'$field'", "value": ""}'
     else
         dialog --clear --stdout \
             --title "Error" \
@@ -87,14 +75,10 @@ update_config_field() {
     
     # Get current configuration for the specified field
     local current_config=$(get_current_config "$field")
-    
-    exit 0
-    
+        
     if [ $? -ne 0 ]; then
         return 1
     fi
-    
-    
 
     # Extract current value from the response
     local current_value=$(echo "$current_config" | jq -r '.value // ""')
