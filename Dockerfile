@@ -4,6 +4,8 @@ WORKDIR /app
 
 RUN apk add --no-cache \
     dialog \
+    curl \
+    openssl \
     bash \
     jq \
     yq
