@@ -33,7 +33,7 @@ generate_hmac_signature() {
     local message="${method}${path}${body}${timestamp}"
     
     # Generate HMAC signature using the HMAC key
-    echo -n "$message" | openssl dgst -sha256 -hmac "$HMAC" -binary | base64
+    echo -n "$message" | openssl dgst -sha512 -hmac "$HMAC" -binary | base64
 }
 
 # Function to get current configuration value for a specific field
@@ -43,14 +43,24 @@ get_current_config() {
     
     local timestamp=$(date +%s)
     local signature=$(generate_hmac_signature "GET" "/config/$field" "" "$timestamp")
+
+    # Output to file for debugging
+    echo "Signature: $signature" > debug.txt
+    echo "Timestamp: $timestamp" >> debug.txt
+    echo "Field: $field" >> debug.txt
+    echo "HMAC: $HMAC" >> debug.txt
+    echo "Message: $message" >> debug.txt
+    echo "Body: $body" >> debug.txt
+    echo "HTTP Code: $http_code" >> debug.txt
+    echo "Response: $response" >> debug.txt
     
     # Make GET request to fetch current config for specific field
     local response=$(curl -s -w "\n%{http_code}" \
         -H "x-signature: $signature" \
         -H "x-timestamp: $timestamp" \
         -H "Content-Type: application/json" \
-        "http://127.0.0.1:8000/config/$field")
-    
+        "http://host.docker.internal:8000/config/$field")
+
     local http_code=$(echo "$response" | tail -n1)
     local body=$(echo "$response" | head -n -1)
     
@@ -77,10 +87,15 @@ update_config_field() {
     
     # Get current configuration for the specified field
     local current_config=$(get_current_config "$field")
+    
+    exit 0
+    
     if [ $? -ne 0 ]; then
         return 1
     fi
     
+    
+
     # Extract current value from the response
     local current_value=$(echo "$current_config" | jq -r '.value // ""')
     
@@ -115,7 +130,7 @@ update_config_field() {
         -H "x-timestamp: $timestamp" \
         -H "Content-Type: application/json" \
         -d "$patch_data" \
-        "http://127.0.0.1:8000/config")
+        "http://host.docker.internal:8000/config")
     
     local http_code=$(echo "$response" | tail -n1)
     local body=$(echo "$response" | head -n -1)
