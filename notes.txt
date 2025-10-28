@@ -1,0 +1,1 @@
+docker build -t rex-radio-wrench . && docker run -it --rm --name temp-container rex-radio-wrench
