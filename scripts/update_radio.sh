@@ -72,6 +72,39 @@ get_current_config() {
     fi
 }
 
+# Shared function to send PATCH request
+send_patch_request() {
+    local field="$1"
+    local field_display_name="$2"
+    local patch_data="$3"
+    
+    # Generate HMAC signature for PATCH request
+    local timestamp=$(date +%s)
+    local signature=$(generate_hmac_signature "PATCH" "/config" "$patch_data" "$timestamp")
+    
+    # Make PATCH request
+    local response=$(curl -s -w "\n%{http_code}" \
+        -X PATCH \
+        -H "x-signature: $signature" \
+        -H "x-timestamp: $timestamp" \
+        -H "Content-Type: application/json" \
+        -d "$patch_data" \
+        "http://host.docker.internal:8000/config")
+    
+    local http_code=$(echo "$response" | tail -n1)
+    local body=$(echo "$response" | head -n -1)
+    
+    if [ "$http_code" -eq 200 ]; then
+        dialog --clear --stdout \
+            --title "Success" \
+            --msgbox "$field_display_name updated successfully!" 8 40
+    else
+        dialog --clear --stdout \
+            --title "Error" \
+            --msgbox "Failed to update $field_display_name. HTTP $http_code\nResponse: $body" 10 60
+    fi
+}
+
 # Generic function to update any configuration field
 update_config_field() {
     local field="$1"
@@ -114,36 +147,11 @@ update_config_field() {
         return 1
     fi
     
-    local new_value="$dialog_result"
-    
     # Prepare PATCH data
-    local patch_data="[{\"field\": \"$field\", \"value\": \"$new_value\"}]"
+    local patch_data="[{\"field\": \"$field\", \"value\": \"$dialog_result\"}]"
     
-    # Generate HMAC signature for PATCH request
-    local timestamp=$(date +%s)
-    local signature=$(generate_hmac_signature "PATCH" "/config" "$patch_data" "$timestamp")
-
-    # Make PATCH request
-    local response=$(curl -s -w "\n%{http_code}" \
-        -X PATCH \
-        -H "x-signature: $signature" \
-        -H "x-timestamp: $timestamp" \
-        -H "Content-Type: application/json" \
-        -d "$patch_data" \
-        "http://host.docker.internal:8000/config")
-
-    local http_code=$(echo "$response" | tail -n1)
-    local body=$(echo "$response" | head -n -1)
-    
-    if [ "$http_code" -eq 200 ]; then
-        dialog --clear --stdout \
-            --title "Success" \
-            --msgbox "$field_display_name updated successfully!" 8 40
-    else
-        dialog --clear --stdout \
-            --title "Error" \
-            --msgbox "Failed to update $field_display_name. HTTP $http_code\nResponse: $body" 10 60
-    fi
+    # Send the request
+    send_patch_request "$field" "$field_display_name" "$patch_data"
 }
 
 # Function to update configuration field that contains an array (like genres)
@@ -220,30 +228,7 @@ update_config_field_array() {
     # Prepare PATCH data for array
     local patch_data=$(jq -n --arg field "$field" --argjson value "$new_values" '[{"field": $field, "value": $value}]')
     
-    # Generate HMAC signature for PATCH request
-    local timestamp=$(date +%s)
-    local signature=$(generate_hmac_signature "PATCH" "/config" "$patch_data" "$timestamp")
-    
-    # Make PATCH request
-    local response=$(curl -s -w "\n%{http_code}" \
-        -X PATCH \
-        -H "x-signature: $signature" \
-        -H "x-timestamp: $timestamp" \
-        -H "Content-Type: application/json" \
-        -d "$patch_data" \
-        "http://host.docker.internal:8000/config")
-    
-    local http_code=$(echo "$response" | tail -n1)
-    local body=$(echo "$response" | head -n -1)
-    
-    if [ "$http_code" -eq 200 ]; then
-        dialog --clear --stdout \
-            --title "Success" \
-            --msgbox "$field_display_name updated successfully!" 8 40
-    else
-        dialog --clear --stdout \
-            --title "Error" \
-            --msgbox "Failed to update $field_display_name. HTTP $http_code\nResponse: $body" 10 60
-    fi
+    # Send the request
+    send_patch_request "$field" "$field_display_name" "$patch_data"
 }
 
