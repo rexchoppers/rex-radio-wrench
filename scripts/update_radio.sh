@@ -87,21 +87,32 @@ update_config_field() {
     local current_value=$(echo "$current_config" | jq -r '.value // ""')
     
     # Show input dialog with current value
-    local new_value=$(dialog --clear --stdout \
+    local dialog_result
+    dialog_result=$(dialog --clear --stdout \
         --title "Update $field_display_name" \
         --inputbox "Enter new $field_display_name:" 10 50 "$current_value")
+    local dialog_exit_code=$?
     
-    if [ $? -ne 0 ]; then
-        # User cancelled
+    # Check if user cancelled (exit code != 0)
+    if [ $dialog_exit_code -ne 0 ]; then
+        # User cancelled - go back to menu
         return 0
     fi
     
-    if [ -z "$new_value" ]; then
+    # Check if user entered the same value as current (likely cancelled with pre-filled value)
+    if [ "$dialog_result" = "$current_value" ]; then
+        return 0
+    fi
+    
+    # Check if user entered empty value
+    if [ -z "$dialog_result" ]; then
         dialog --clear --stdout \
             --title "Error" \
             --msgbox "$field_display_name cannot be empty." 8 40
         return 1
     fi
+    
+    local new_value="$dialog_result"
     
     # Prepare PATCH data
     local patch_data="[{\"field\": \"$field\", \"value\": \"$new_value\"}]"
