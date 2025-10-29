@@ -30,10 +30,13 @@ generate_hmac_signature() {
     local timestamp="$4"
     
     # Create the message to sign
-    local message="${method}${path}${body}${timestamp}"
+    local message="${timestamp}${method}${path}${body}"
     
     # Generate HMAC signature using the HMAC key
-    echo -n "$message" | openssl dgst -sha512 -hmac "$HMAC" -binary | base64
+    local signature
+    signature=$(echo -n "$message" | openssl dgst -sha512 -hmac "$HMAC" -binary | base64 | tr -d '\n')
+
+    echo "$signature"
 }
 
 # Function to get current configuration value for a specific field
@@ -106,7 +109,7 @@ update_config_field() {
     # Generate HMAC signature for PATCH request
     local timestamp=$(date +%s)
     local signature=$(generate_hmac_signature "PATCH" "/config" "$patch_data" "$timestamp")
-    
+
     # Make PATCH request
     local response=$(curl -s -w "\n%{http_code}" \
         -X PATCH \
@@ -115,7 +118,7 @@ update_config_field() {
         -H "Content-Type: application/json" \
         -d "$patch_data" \
         "http://host.docker.internal:8000/config")
-    
+
     local http_code=$(echo "$response" | tail -n1)
     local body=$(echo "$response" | head -n -1)
     
