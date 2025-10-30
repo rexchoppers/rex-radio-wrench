@@ -2,6 +2,7 @@
 
 . home.sh
 . update_radio.sh
+. presenters.sh
 
 # Get HMAC configuration at startup
 get_hmac

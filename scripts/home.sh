@@ -44,12 +44,14 @@ validate_hmac() {
 home() {
   choice=$(dialog --clear --stdout \
     --title "Rex Radio Wrench" \
-    --menu "Choose an action:" 15 50 5 \
-    1 "Update Radio Information")
+    --menu "Choose an action:" 15 50 7 \
+    1 "Update Radio Information" \
+    2 "Presenters" \
+    3 "Exit")
 
   case $choice in
     1) update_radio ;;
-    2) show_versions ;;
+    2) presenters_menu ;;
     3) clear; exit ;;
   esac
 }
