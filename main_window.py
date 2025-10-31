@@ -7,6 +7,7 @@ import base64
 import time
 import json
 import os
+import re
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -243,15 +244,29 @@ class MainWindow(QMainWindow):
         self.name_edit.blockSignals(False)
         self.desc_edit.blockSignals(False)
 
-        # Populate genre list with all defaults and select those in settings
-        selected_labels = {g.get("label", "") for g in self.settings.get("genres", [])}
+        # Populate genre list with all defaults and select those in settings by ID
+        selected_ids = {g.get("id", "") for g in self.settings.get("genres", []) if g.get("id")}
+        default_ids = {slugify(lbl) for lbl in DEFAULT_GENRE_LABELS}
         self.genres_list.blockSignals(True)
         self.genres_list.clear()
+        # Add default genres
         for label in DEFAULT_GENRE_LABELS:
+            gid = slugify(label)
             item = QListWidgetItem(label)
-            if label in selected_labels:
-                item.setSelected(True)
+            item.setData(Qt.ItemDataRole.UserRole, gid)
             self.genres_list.addItem(item)
+            if gid in selected_ids:
+                item.setSelected(True)
+        # Add any extra genres from settings that aren't in defaults
+        for g in self.settings.get("genres", []):
+            gid = g.get("id")
+            if not gid or gid in default_ids:
+                continue
+            label = g.get("label") or self._humanize_slug(gid)
+            extra_item = QListWidgetItem(label)
+            extra_item.setData(Qt.ItemDataRole.UserRole, gid)
+            self.genres_list.addItem(extra_item)
+            extra_item.setSelected(True)
         self.genres_list.blockSignals(False)
 
     def _connect_signals(self) -> None:
@@ -274,8 +289,12 @@ class MainWindow(QMainWindow):
         self._refresh_view()
 
     def on_genres_selection_changed(self) -> None:
-        labels = [item.text() for item in self.genres_list.selectedItems()]
-        genres = [{"id": slugify(lbl), "label": lbl} for lbl in labels]
+        items = self.genres_list.selectedItems()
+        genres: List[Dict[str, str]] = []
+        for item in items:
+            label = item.text()
+            gid = item.data(Qt.ItemDataRole.UserRole) or slugify(label)
+            genres.append({"id": gid, "label": label})
         self.settings["genres"] = genres
         self._rebuild_mappings()
         self.statusBar().showMessage(f"Selected {len(genres)} genre(s)", 2500)
@@ -309,8 +328,12 @@ class MainWindow(QMainWindow):
         # Ensure settings reflect current UI values
         name = self.name_edit.text().strip()
         description = self.desc_edit.toPlainText().strip()
-        labels = [item.text() for item in self.genres_list.selectedItems()]
-        genres = [{"id": slugify(lbl), "label": lbl} for lbl in labels]
+        items = self.genres_list.selectedItems()
+        genres: List[Dict[str, str]] = []
+        for item in items:
+            label = item.text()
+            gid = item.data(Qt.ItemDataRole.UserRole) or slugify(label)
+            genres.append({"id": gid, "label": label})
         genre_ids = [g["id"] for g in genres]
 
         # Update local state first (so UI reflects latest even if server fails)
@@ -468,19 +491,52 @@ class MainWindow(QMainWindow):
 
     def _coerce_genres_from_payload(self, genres_payload) -> List[Dict[str, str]]:
         """Normalize incoming genres into a list of {id,label} dicts.
-        Accepts list[str] (IDs) or list[dict{id,label}]."""
+        Accepts:
+        - list[str] (IDs)
+        - list[dict{id,label}]
+        - dict with numeric/string indices → values treated as list items
+        - string JSON (e.g., "[\"ambient\",\"techno\"]") or comma/space separated string
+        """
         default_id_to_label = {slugify(lbl): lbl for lbl in DEFAULT_GENRE_LABELS}
         result: List[Dict[str, str]] = []
-        if not genres_payload:
+        if genres_payload is None:
             return result
+
+        # If payload is a JSON/text representation, coerce to Python type
+        if isinstance(genres_payload, str):
+            s = genres_payload.strip()
+            # Try JSON first
+            if s.startswith("[") or s.startswith("{"):
+                try:
+                    parsed = json.loads(s)
+                    genres_payload = parsed
+                except Exception:
+                    # fall back to splitting
+                    pass
+            if isinstance(genres_payload, str):
+                # Fallback split on commas or whitespace
+                parts = [p.strip() for p in re.split(r"[\s,]+", s) if p.strip()]
+                genres_payload = parts
+
+        # If payload is a dict like {"0":"ambient","1":"techno"}, take values
+        if isinstance(genres_payload, dict):
+            # Preserve numeric key order when possible
+            try:
+                items = [v for k, v in sorted(genres_payload.items(), key=lambda kv: int(kv[0]))]
+            except Exception:
+                items = list(genres_payload.values())
+            genres_payload = items
+
         if isinstance(genres_payload, list):
             for item in genres_payload:
                 if isinstance(item, str):
-                    gid = item
+                    gid = item.strip()
+                    if not gid:
+                        continue
                     label = default_id_to_label.get(gid) or self.id_to_label.get(gid) or self._humanize_slug(gid)
                     result.append({"id": gid, "label": label})
                 elif isinstance(item, dict):
-                    gid = item.get("id") or slugify(item.get("label", ""))
+                    gid = (item.get("id") or slugify(item.get("label", ""))).strip()
                     if not gid:
                         continue
                     label = item.get("label") or default_id_to_label.get(gid) or self._humanize_slug(gid)
@@ -534,6 +590,8 @@ class MainWindow(QMainWindow):
             self.logs_view.append("[GET /config/name] ok")
             self.logs_view.append("[GET /config/description] ok")
             self.logs_view.append(f"[GET /config/genres] {len(new_settings.get('genres', []))} item(s)")
+            selected_ids_log = [g.get("id") for g in new_settings.get("genres", []) if g.get("id")]
+            self.logs_view.append(f"[UI] selected genres: {selected_ids_log}")
             self.logs_view.append(f"[APPLIED] {snippet}")
         except Exception:
             pass
