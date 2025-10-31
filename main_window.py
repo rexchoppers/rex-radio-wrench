@@ -53,7 +53,7 @@ class MainWindow(QMainWindow):
     def __init__(self, hmac_key: Optional[str] = None, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.hmac_key = hmac_key  # stored for future API usage
-        self.api_base_url: str = "http://host.docker.internal:8000"  # placeholder; can be made configurable
+        self.api_base_url: str = "http://localhost:8000"  # placeholder; can be made configurable
         self.settings: Dict = build_default_settings()
         self.label_to_id: Dict[str, str] = {}
         self.id_to_label: Dict[str, str] = {}
@@ -186,12 +186,19 @@ class MainWindow(QMainWindow):
         self.act_quit.setShortcut(QKeySequence.StandardKey.Quit)
         self.act_quit.triggered.connect(self.close)
 
+        # Station actions
+        self.act_reload = QAction("Reload Station Information", self)
+        self.act_reload.setShortcut(QKeySequence("Ctrl+R"))
+        self.act_reload.triggered.connect(self.on_load_clicked)
+
     def _create_menus(self) -> None:
         menu_bar = self.menuBar()
 
         menu_file = menu_bar.addMenu("File")
         menu_file.addAction(self.act_quit)
 
+        menu_station = menu_bar.addMenu("Station")
+        menu_station.addAction(self.act_reload)
 
         menu_help = menu_bar.addMenu("Help")
         menu_help.addAction(self.act_about)
@@ -245,7 +252,7 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         # Navigation
-        self.nav_list.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self.nav_list.currentRowChanged.connect(self.on_nav_changed)
         # App Info
         self.name_edit.textChanged.connect(self.on_name_changed)
         self.desc_edit.textChanged.connect(self.on_desc_changed)
@@ -269,6 +276,25 @@ class MainWindow(QMainWindow):
         self._rebuild_mappings()
         self.statusBar().showMessage(f"Selected {len(genres)} genre(s)", 2500)
 
+    def on_nav_changed(self, index: int) -> None:
+        # Switch stacked page when the left nav selection changes
+        self.stack.setCurrentIndex(index)
+        # When entering Station Information, fetch latest from API
+        if index == 1:
+            self.on_load_clicked()
+
+    def build_station_payload_for_api(self) -> Dict:
+        """Build the payload shape expected by the API when sending station info.
+        - Genres are sent as a list of machine-readable IDs
+        - Name and description are sent as plain strings
+        """
+        payload = {
+            "name": self.settings.get("name", ""),
+            "description": self.settings.get("description", ""),
+            "genres": [g.get("id", "") for g in self.settings.get("genres", []) if g.get("id")],
+        }
+        return payload
+
     def _refresh_view(self) -> None:
         self.setWindowTitle(self.settings.get("name", "Rex Radio Wrench"))
         self.title_label.setText(self.settings.get("name", "Rex Radio Wrench"))
@@ -281,9 +307,24 @@ class MainWindow(QMainWindow):
         self.settings["description"] = self.desc_edit.toPlainText().strip()
         labels = [item.text() for item in self.genres_list.selectedItems()]
         self.settings["genres"] = [{"id": slugify(lbl), "label": lbl} for lbl in labels]
+
+        # Rebuild mappings and reflect changes in the UI
         self._rebuild_mappings()
         self._refresh_view()
+
+        # Build the API payload (machine-readable IDs for genres)
+        payload = self.build_station_payload_for_api()
+
         self.statusBar().showMessage("Changes applied", 3000)
+        # For visibility, log the payload and mapping sizes
+        try:
+            compact = json.dumps(payload, separators=(",", ":"))
+            self.logs_view.append(f"[APPLY] Payload to API: {compact}")
+            self.logs_view.append(
+                f"[MAPPINGS] label->id: {len(self.label_to_id)} items, id->label: {len(self.id_to_label)} items"
+            )
+        except Exception:
+            pass
 
     # ----- HMAC + simple GET helper matching provided shell script
     def _generate_hmac_signature(self, method: str, path: str, body: str, timestamp: str) -> str:
@@ -324,3 +365,120 @@ class MainWindow(QMainWindow):
         except Exception as ex:  # pragma: no cover
             QMessageBox.critical(self, "Error", f"Failed to fetch configuration. {ex}")
             return None
+
+    def get_station_config(self) -> Optional[Dict]:
+        """Fetch station configuration by calling GET /config/{field} for name, description, and genres.
+
+        Returns a dict with keys: name (str), description (str), genres (list[{id,label}]).
+        Returns None if a non-recoverable error occurs (e.g., network/server error).
+        """
+        # Fetch individual fields
+        name_resp = self.get_current_config("name")
+        desc_resp = self.get_current_config("description")
+        genres_resp = self.get_current_config("genres")
+
+        # If a request failed (non-400), abort gracefully. 400s are handled inside get_current_config().
+        if name_resp is None or desc_resp is None or genres_resp is None:
+            return None
+
+        def _val(resp, default=""):
+            # Extract value from various possible response shapes
+            if isinstance(resp, dict):
+                if "value" in resp:
+                    return resp.get("value", default)
+                for k in ("name", "description", "genres"):
+                    if k in resp:
+                        return resp.get(k, default)
+                return default
+            return resp if resp is not None else default
+
+        name_val = _val(name_resp, "")
+        desc_val = _val(desc_resp, "")
+        genres_raw = _val(genres_resp, [])
+        genres_list = self._coerce_genres_from_payload(genres_raw)
+
+        return {
+            "name": name_val if isinstance(name_val, str) else "",
+            "description": desc_val if isinstance(desc_val, str) else "",
+            "genres": genres_list,
+        }
+
+    def _humanize_slug(self, s: str) -> str:
+        if not s:
+            return ""
+        label = s.replace("_", " ")
+        # turn 'drum and bass' into 'Drum & Bass' best-effort
+        label = label.replace(" and ", " & ")
+        return label.title()
+
+    def _coerce_genres_from_payload(self, genres_payload) -> List[Dict[str, str]]:
+        """Normalize incoming genres into a list of {id,label} dicts.
+        Accepts list[str] (IDs) or list[dict{id,label}]."""
+        default_id_to_label = {slugify(lbl): lbl for lbl in DEFAULT_GENRE_LABELS}
+        result: List[Dict[str, str]] = []
+        if not genres_payload:
+            return result
+        if isinstance(genres_payload, list):
+            for item in genres_payload:
+                if isinstance(item, str):
+                    gid = item
+                    label = default_id_to_label.get(gid) or self.id_to_label.get(gid) or self._humanize_slug(gid)
+                    result.append({"id": gid, "label": label})
+                elif isinstance(item, dict):
+                    gid = item.get("id") or slugify(item.get("label", ""))
+                    if not gid:
+                        continue
+                    label = item.get("label") or default_id_to_label.get(gid) or self._humanize_slug(gid)
+                    result.append({"id": gid, "label": label})
+        return result
+
+    def on_load_clicked(self) -> None:
+        """Load station information via GET /config/{field} and populate the UI."""
+        self.statusBar().showMessage("Loading station information…", 1500)
+
+        # Fetch individual fields
+        name_resp = self.get_current_config("name")
+        desc_resp = self.get_current_config("description")
+        genres_resp = self.get_current_config("genres")
+
+        # If a request failed (non-400), abort gracefully. 400s are handled in get_current_config.
+        if name_resp is None or desc_resp is None or genres_resp is None:
+            self.statusBar().showMessage("Failed to load one or more fields.", 3000)
+            return
+
+        def _val(resp, default=""):
+            # Extract value from various possible response shapes
+            if isinstance(resp, dict):
+                if "value" in resp:
+                    return resp.get("value", default)
+                # Sometimes servers return {field: value}
+                for k in ("name", "description", "genres"):
+                    if k in resp:
+                        return resp.get(k, default)
+                return default
+            return resp if resp is not None else default
+
+        name_val = _val(name_resp, self.settings.get("name"))
+        desc_val = _val(desc_resp, self.settings.get("description"))
+        genres_raw = _val(genres_resp, [])
+        genres_list = self._coerce_genres_from_payload(genres_raw)
+
+        new_settings = {
+            "name": name_val if isinstance(name_val, str) else self.settings.get("name"),
+            "description": desc_val if isinstance(desc_val, str) else self.settings.get("description"),
+            "genres": genres_list,
+        }
+        self.apply_settings(new_settings)
+        # Sync controls with the newly loaded settings
+        self._populate_controls_from_settings()
+        self._rebuild_mappings()
+        self._refresh_view()
+        self.statusBar().showMessage("Station information loaded", 3000)
+        try:
+            snippet = json.dumps({"name": new_settings.get("name", ""), "genres_count": len(new_settings.get("genres", []))})
+            self.logs_view.append("[GET /config/name] ok")
+            self.logs_view.append("[GET /config/description] ok")
+            self.logs_view.append(f"[GET /config/genres] {len(new_settings.get('genres', []))} item(s)")
+            self.logs_view.append(f"[APPLIED] {snippet}")
+        except Exception:
+            pass
