@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import hmac
 import hashlib
 import base64
 import time
 import json
+import os
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -53,7 +54,8 @@ class MainWindow(QMainWindow):
     def __init__(self, hmac_key: Optional[str] = None, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.hmac_key = hmac_key  # stored for future API usage
-        self.api_base_url: str = "http://localhost:8000"  # placeholder; can be made configurable
+        # Base URL can be overridden via env var REX_API_BASE_URL
+        self.api_base_url: str = os.environ.get("REX_API_BASE_URL", "http://localhost:8000")  # placeholder; can be made configurable
         self.settings: Dict = build_default_settings()
         self.label_to_id: Dict[str, str] = {}
         self.id_to_label: Dict[str, str] = {}
@@ -128,6 +130,8 @@ class MainWindow(QMainWindow):
         hmac_mask = "●" * 8 if (self.hmac_key or "") else "(not set)"
         self.hmac_label = QLabel(f"HMAC key: {hmac_mask}")
         auth_v.addWidget(self.hmac_label)
+        self.api_label = QLabel(f"API base URL: {self.api_base_url}")
+        auth_v.addWidget(self.api_label)
         conn_layout.addWidget(auth_group)
         conn_layout.addStretch(1)
 
@@ -303,28 +307,52 @@ class MainWindow(QMainWindow):
     # ----- Apply action
     def on_apply_clicked(self) -> None:
         # Ensure settings reflect current UI values
-        self.settings["name"] = self.name_edit.text().strip()
-        self.settings["description"] = self.desc_edit.toPlainText().strip()
+        name = self.name_edit.text().strip()
+        description = self.desc_edit.toPlainText().strip()
         labels = [item.text() for item in self.genres_list.selectedItems()]
-        self.settings["genres"] = [{"id": slugify(lbl), "label": lbl} for lbl in labels]
+        genres = [{"id": slugify(lbl), "label": lbl} for lbl in labels]
+        genre_ids = [g["id"] for g in genres]
+
+        # Update local state first (so UI reflects latest even if server fails)
+        self.settings["name"] = name
+        self.settings["description"] = description
+        self.settings["genres"] = genres
 
         # Rebuild mappings and reflect changes in the UI
         self._rebuild_mappings()
         self._refresh_view()
 
-        # Build the API payload (machine-readable IDs for genres)
-        payload = self.build_station_payload_for_api()
+        # Start saving to server (bulk PATCH /config)
+        self.statusBar().showMessage("Saving station information…", 3000)
+        self.btn_apply.setEnabled(False)
+        self.name_edit.setEnabled(False)
+        self.desc_edit.setEnabled(False)
+        self.genres_list.setEnabled(False)
 
-        self.statusBar().showMessage("Changes applied", 3000)
-        # For visibility, log the payload and mapping sizes
+        updates: List[Tuple[str, Any]] = [("name", name), ("description", description), ("genres", genre_ids)]
         try:
-            compact = json.dumps(payload, separators=(",", ":"))
-            self.logs_view.append(f"[APPLY] Payload to API: {compact}")
-            self.logs_view.append(
-                f"[MAPPINGS] label->id: {len(self.label_to_id)} items, id->label: {len(self.id_to_label)} items"
-            )
-        except Exception:
-            pass
+            # Log the exact payload we will sign and send
+            try:
+                preview_body = json.dumps([{"field": f, "value": v} for (f, v) in updates], separators=(",", ":"))
+                self.logs_view.append(f"[PATCH /config] body: {preview_body}")
+            except Exception:
+                pass
+
+            ok, status, text = self.patch_config_bulk(updates)
+            if ok:
+                self.logs_view.append(f"[PATCH /config] {status} ok")
+                self.statusBar().showMessage("Station information saved", 3000)
+            else:
+                snippet = (text or "").strip()
+                if len(snippet) > 500:
+                    snippet = snippet[:500] + "…"
+                self.logs_view.append(f"[PATCH /config] {status} fail: {snippet}")
+                QMessageBox.warning(self, "Save failed", f"Failed to save station information. HTTP {status}\n{snippet}")
+        finally:
+            self.btn_apply.setEnabled(True)
+            self.name_edit.setEnabled(True)
+            self.desc_edit.setEnabled(True)
+            self.genres_list.setEnabled(True)
 
     # ----- HMAC + simple GET helper matching provided shell script
     def _generate_hmac_signature(self, method: str, path: str, body: str, timestamp: str) -> str:
@@ -365,6 +393,33 @@ class MainWindow(QMainWindow):
         except Exception as ex:  # pragma: no cover
             QMessageBox.critical(self, "Error", f"Failed to fetch configuration. {ex}")
             return None
+
+    def patch_config_bulk(self, updates: List[Tuple[str, Any]]) -> Tuple[bool, int, str]:
+        """PATCH /config with an array of objects: [{"field": str, "value": Any}, ...]
+        Returns (success, status_code, response_text)."""
+        base = self.api_base_url.rstrip("/")
+        path = "/config"
+        url = f"{base}{path}"
+        payload_list = [{"field": f, "value": v} for (f, v) in updates]
+        try:
+            body_str = json.dumps(payload_list, separators=(",", ":"), ensure_ascii=False)
+        except Exception:
+            # Fallback: coerce values to strings
+            payload_list = [{"field": f, "value": ("" if v is None else str(v))} for (f, v) in updates]
+            body_str = json.dumps(payload_list, separators=(",", ":"), ensure_ascii=False)
+        headers = self._auth_headers("PATCH", path, body_str)
+        data = body_str.encode("utf-8")
+        req = urllib.request.Request(url, data=data, method="PATCH", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                resp_text = resp.read().decode("utf-8", errors="replace")
+                status = getattr(resp, "status", resp.getcode())
+                return True, int(status), resp_text
+        except urllib.error.HTTPError as e:
+            resp_text = e.read().decode("utf-8", errors="replace")
+            return False, e.code, resp_text
+        except Exception as ex:  # pragma: no cover
+            return False, 0, str(ex)
 
     def get_station_config(self) -> Optional[Dict]:
         """Fetch station configuration by calling GET /config/{field} for name, description, and genres.
