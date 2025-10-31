@@ -3,6 +3,7 @@ from typing import Optional
 
 from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox
 from dialogs.hmac_key_dialog import HMACKeyDialog
+from main_window import MainWindow
 
 
 def request_hmac_key(parent=None) -> Optional[str]:
@@ -21,9 +22,14 @@ def main() -> int:
         QMessageBox.information(None, "Exiting", "An HMAC key is required. The application will close.")
         return 0
 
-    QMessageBox.information(None, "HMAC Key Received", "The HMAC key has been captured and will be used to authorize API calls.")
+    # Show the main dashboard window; Settings can be opened later from the menu
+    win = MainWindow(hmac_key=hmac_key)
+    win.show()
+
+    # Optionally log debug info (avoid logging secrets in production)
     print("[DEBUG] HMAC key captured (do not log secrets in production):", hmac_key)
-    return 0
+
+    return app.exec()
 
 
 if __name__ == "__main__":
