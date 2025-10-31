@@ -1,6 +1,14 @@
 from __future__ import annotations
 
 from typing import Dict, List, Optional
+import hmac
+import hashlib
+import base64
+import time
+import json
+import urllib.request
+import urllib.error
+import urllib.parse
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence
@@ -19,6 +27,8 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QHBoxLayout,
     QGroupBox,
+    QPushButton,
+    QSizePolicy,
 )
 
 from dialogs.settings_dialog import DEFAULT_GENRE_LABELS, slugify
@@ -43,6 +53,7 @@ class MainWindow(QMainWindow):
     def __init__(self, hmac_key: Optional[str] = None, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.hmac_key = hmac_key  # stored for future API usage
+        self.api_base_url: str = "http://host.docker.internal:8000"  # placeholder; can be made configurable
         self.settings: Dict = build_default_settings()
         self.label_to_id: Dict[str, str] = {}
         self.id_to_label: Dict[str, str] = {}
@@ -54,8 +65,7 @@ class MainWindow(QMainWindow):
         self.nav_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
         self.nav_list.addItems([
             "Dashboard",
-            "App Info",
-            "Genres",
+            "Station Information",
             "Connections",
             "Logs",
         ])
@@ -76,26 +86,39 @@ class MainWindow(QMainWindow):
         dash_layout.addWidget(self.description_label)
         dash_layout.addStretch(1)
 
-        # App Info page (name + description)
+        # Station Information page (name, description, genres)
         self.page_appinfo = QWidget()
         appinfo_layout = QVBoxLayout(self.page_appinfo)
         self.name_edit = QLineEdit()
+        # Make fields expand nicely
+        self.name_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.desc_edit = QTextEdit()
-        self.desc_edit.setFixedHeight(120)
+        self.desc_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.desc_edit.setMinimumHeight(150)
         appinfo_form = QFormLayout()
-        appinfo_form.addRow("Name:", self.name_edit)
+        appinfo_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        appinfo_form.setLabelAlignment(Qt.AlignmentFlag.AlignTop)
+        appinfo_form.addRow("Station name:", self.name_edit)
         appinfo_form.addRow("Description:", self.desc_edit)
         appinfo_layout.addLayout(appinfo_form)
-        appinfo_layout.addStretch(1)
 
-        # Genres page (multi-select)
-        self.page_genres = QWidget()
-        genres_layout = QVBoxLayout(self.page_genres)
-        intro_lbl = QLabel("Choose one or more genres:")
+        # Genres (multi-select)
+        genres_lbl = QLabel("Genres (select one or more):")
         self.genres_list = QListWidget()
         self.genres_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
-        genres_layout.addWidget(intro_lbl)
-        genres_layout.addWidget(self.genres_list)
+        self.genres_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.genres_list.setMinimumHeight(200)
+        appinfo_layout.addWidget(genres_lbl)
+        appinfo_layout.addWidget(self.genres_list, 1)
+
+        # Bottom action row
+        appinfo_layout.addStretch(1)
+        self.btn_apply = QPushButton("Apply")
+        actions_row = QHBoxLayout()
+        actions_row.addStretch(1)
+        actions_row.addWidget(self.btn_apply)
+        appinfo_layout.addLayout(actions_row)
+
 
         # Connections page (placeholders)
         self.page_connections = QWidget()
@@ -119,9 +142,8 @@ class MainWindow(QMainWindow):
         # Add all pages to the stack
         self.stack.addWidget(self.page_dashboard)   # 0
         self.stack.addWidget(self.page_appinfo)     # 1
-        self.stack.addWidget(self.page_genres)      # 2
-        self.stack.addWidget(self.page_connections) # 3
-        self.stack.addWidget(self.page_logs)        # 4
+        self.stack.addWidget(self.page_connections) # 2
+        self.stack.addWidget(self.page_logs)        # 3
 
         # Compose splitter
         splitter = QSplitter()
@@ -229,6 +251,8 @@ class MainWindow(QMainWindow):
         self.desc_edit.textChanged.connect(self.on_desc_changed)
         # Genres
         self.genres_list.itemSelectionChanged.connect(self.on_genres_selection_changed)
+        # Actions
+        self.btn_apply.clicked.connect(self.on_apply_clicked)
 
     def on_name_changed(self, text: str) -> None:
         self.settings["name"] = text.strip()
@@ -249,3 +273,54 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(self.settings.get("name", "Rex Radio Wrench"))
         self.title_label.setText(self.settings.get("name", "Rex Radio Wrench"))
         self.description_label.setText(self.settings.get("description", ""))
+
+    # ----- Apply action
+    def on_apply_clicked(self) -> None:
+        # Ensure settings reflect current UI values
+        self.settings["name"] = self.name_edit.text().strip()
+        self.settings["description"] = self.desc_edit.toPlainText().strip()
+        labels = [item.text() for item in self.genres_list.selectedItems()]
+        self.settings["genres"] = [{"id": slugify(lbl), "label": lbl} for lbl in labels]
+        self._rebuild_mappings()
+        self._refresh_view()
+        self.statusBar().showMessage("Changes applied", 3000)
+
+    # ----- HMAC + simple GET helper matching provided shell script
+    def _generate_hmac_signature(self, method: str, path: str, body: str, timestamp: str) -> str:
+        if not (self.hmac_key or ""):  # pragma: no cover
+            return ""
+        message = f"{timestamp}{method}{path}{body}".encode("utf-8")
+        key_bytes = (self.hmac_key or "").encode("utf-8")
+        digest = hmac.new(key_bytes, message, hashlib.sha512).digest()
+        return base64.b64encode(digest).decode("ascii").strip()
+
+    def _auth_headers(self, method: str, path: str, body: str = "") -> Dict[str, str]:
+        ts = str(int(time.time()))
+        sig = self._generate_hmac_signature(method.upper(), path, body, ts)
+        return {
+            "x-signature": sig,
+            "x-timestamp": ts,
+            "Content-Type": "application/json",
+        }
+
+    def get_current_config(self, field: str) -> Optional[Dict]:
+        """GET /config/{field} — returns a dict or empty-value dict on 400, None on other errors."""
+        base = self.api_base_url.rstrip("/")
+        path = f"/config/{urllib.parse.quote(field)}"
+        url = f"{base}{path}"
+        headers = self._auth_headers("GET", path, "")
+        req = urllib.request.Request(url, method="GET", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = resp.read().decode("utf-8")
+                return json.loads(data) if data else {}
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            if e.code == 400:
+                # Field doesn't exist, return empty value
+                return {"field": field, "value": ""}
+            QMessageBox.critical(self, "Error", f"Failed to fetch configuration. HTTP {e.code}")
+            return None
+        except Exception as ex:  # pragma: no cover
+            QMessageBox.critical(self, "Error", f"Failed to fetch configuration. {ex}")
+            return None
