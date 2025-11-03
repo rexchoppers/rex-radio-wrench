@@ -78,3 +78,43 @@ class ApiClient:
             return False, e.code, resp_text
         except Exception as ex:
             return False, 0, str(ex)
+
+    # Presenters
+    def get_presenters(self) -> Optional[Any]:
+        path = "/presenters"
+        url = f"{self.base_url}{path}"
+        req = urllib.request.Request(url, method="GET", headers=self._headers("GET", path, ""))
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                data = resp.read().decode("utf-8", errors="replace")
+                return json.loads(data) if data else []
+        except urllib.error.HTTPError as e:
+            _ = e.read().decode("utf-8", errors="replace")
+            return None
+        except Exception:
+            return None
+
+    def create_presenter(self, payload: Dict[str, Any]) -> Tuple[bool, int, str]:
+        path = "/presenters"
+        url = f"{self.base_url}{path}"
+        try:
+            body_str = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        except Exception:
+            # last resort: stringify certain values
+            safe = {}
+            for k, v in (payload or {}).items():
+                safe[k] = v if v is None or isinstance(v, (bool, int, float, list, dict)) else str(v)
+            body_str = json.dumps(safe, separators=(",", ":"), ensure_ascii=False)
+        headers = self._headers("POST", path, body_str)
+        data = body_str.encode("utf-8")
+        req = urllib.request.Request(url, data=data, method="POST", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                resp_text = resp.read().decode("utf-8", errors="replace")
+                status = getattr(resp, "status", resp.getcode())
+                return True, int(status), resp_text
+        except urllib.error.HTTPError as e:
+            resp_text = e.read().decode("utf-8", errors="replace")
+            return False, e.code, resp_text
+        except Exception as ex:
+            return False, 0, str(ex)

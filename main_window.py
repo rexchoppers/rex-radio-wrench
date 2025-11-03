@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional
 
 from api_client import ApiClient
 from station_info_page import StationInformationPage
+from presenters_page import PresentersPage
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence
@@ -20,9 +21,6 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QTextEdit,
 )
-
-
-
 
 
 class MainWindow(QMainWindow):
@@ -48,6 +46,7 @@ class MainWindow(QMainWindow):
         self.nav_list.addItems([
             "Dashboard",
             "Station Information",
+            "Presenters",
             "Connections",
             "Logs",
         ])
@@ -77,6 +76,12 @@ class MainWindow(QMainWindow):
         )
         self.page_appinfo = self.station_page
 
+        # Presenters page widget
+        self.presenters_page = PresentersPage(
+            api=self.api,
+            log_cb=self._log,
+            status_cb=self._status,
+        )
 
         # Connections page (placeholders)
         self.page_connections = QWidget()
@@ -102,8 +107,9 @@ class MainWindow(QMainWindow):
         # Add all pages to the stack
         self.stack.addWidget(self.page_dashboard)   # 0
         self.stack.addWidget(self.page_appinfo)     # 1
-        self.stack.addWidget(self.page_connections) # 2
-        self.stack.addWidget(self.page_logs)        # 3
+        self.stack.addWidget(self.presenters_page)  # 2
+        self.stack.addWidget(self.page_connections) # 3
+        self.stack.addWidget(self.page_logs)        # 4
 
         # Compose splitter
         splitter = QSplitter()
@@ -149,6 +155,11 @@ class MainWindow(QMainWindow):
         self.act_reload.setShortcut(QKeySequence("Ctrl+R"))
         self.act_reload.triggered.connect(self.station_page.load_from_api)
 
+        # Presenters actions
+        self.act_reload_presenters = QAction("Reload Presenters", self)
+        self.act_reload_presenters.setShortcut(QKeySequence("Ctrl+Shift+R"))
+        self.act_reload_presenters.triggered.connect(self.presenters_page.load_presenters)
+
     def _create_menus(self) -> None:
         menu_bar = self.menuBar()
 
@@ -157,6 +168,9 @@ class MainWindow(QMainWindow):
 
         menu_station = menu_bar.addMenu("Station")
         menu_station.addAction(self.act_reload)
+
+        menu_presenters = menu_bar.addMenu("Presenters")
+        menu_presenters.addAction(self.act_reload_presenters)
 
         menu_help = menu_bar.addMenu("Help")
         menu_help.addAction(self.act_about)
@@ -206,9 +220,11 @@ class MainWindow(QMainWindow):
     def on_nav_changed(self, index: int) -> None:
         # Switch stacked page when the left nav selection changes
         self.stack.setCurrentIndex(index)
-        # When entering Station Information, fetch latest from API
+        # When entering Station Information or Presenters, fetch latest from API
         if index == 1:
             self.station_page.load_from_api()
+        elif index == 2:
+            self.presenters_page.load_presenters()
 
     def _refresh_view(self) -> None:
         self.setWindowTitle(self.settings.get("name", "Rex Radio Wrench"))
