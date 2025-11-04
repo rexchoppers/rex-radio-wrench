@@ -169,7 +169,9 @@ class PresentersPage(QWidget):
         self.presenters_list.clear()
         for p in presenters:
             name = p.get("name") or "(unnamed)"
-            schedule = p.get("schedule")
+            schedule = p.get("schedules")
+            if schedule is None:
+                schedule = p.get("schedule")
             roles = p.get("roles") or []
             voice_id = p.get("voice_id") or ""
             sched_summary = ""
@@ -177,16 +179,24 @@ class PresentersPage(QWidget):
                 parts = []
                 for b in schedule:
                     if isinstance(b, dict):
-                        days = b.get("days") or []
                         start = (b.get("start") or "").strip()
                         end = (b.get("end") or "").strip()
-                        parts.append(f"{','.join(days)} {start}-{end}")
+                        if "day" in b:
+                            day = (b.get("day") or "").strip()
+                            parts.append(f"{day} {start}-{end}")
+                        else:
+                            days = b.get("days") or []
+                            parts.append(f"{','.join(days)} {start}-{end}")
                 sched_summary = " | ".join([p for p in parts if p.strip()])
             elif isinstance(schedule, dict):
-                days = schedule.get("days") or []
                 start = (schedule.get("start") or "").strip()
                 end = (schedule.get("end") or "").strip()
-                sched_summary = f"{','.join(days)} {start}-{end}"
+                if "day" in schedule:
+                    day = (schedule.get("day") or "").strip()
+                    sched_summary = f"{day} {start}-{end}"
+                else:
+                    days = schedule.get("days") or []
+                    sched_summary = f"{','.join(days)} {start}-{end}"
             summary = f"{name} — {sched_summary} — roles:{','.join(roles)} — {voice_id}"
             self.presenters_list.addItem(QListWidgetItem(summary))
         self._log(f"[GET /presenters] {self.presenters_list.count()} item(s)")
@@ -300,11 +310,17 @@ class PresentersPage(QWidget):
         if not voice_id:
             QMessageBox.warning(self, "Validation", "Voice ID is required.")
             return None
+        # Expand multi-day blocks into single-day schedule entries
+        schedules: List[Dict[str, str]] = []
+        for b in blocks:
+            for d in b["days"]:
+                schedules.append({"day": d, "start": b["start"], "end": b["end"]})
         payload = {
             "name": name,
-            "schedule": blocks,
+            "schedules": schedules,
             "roles": roles,
             "voice_model": voice_model,
+            "model_id": voice_model,
             "voice_id": voice_id,
         }
         return payload
