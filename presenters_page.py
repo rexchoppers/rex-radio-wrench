@@ -41,8 +41,8 @@ ROLE_LABELS = [
 ]
 
 VOICE_MODEL_DEFAULT = "eleven_multilingual_v2"
-VOICE_IDS = [
-    "British Radio Presenter 1",
+VOICE_OPTIONS = [
+    {"name": "British Radio Presenter 1", "id": "nrD2uNU2IUYtedZegcGx"},
 ]
 
 class PresentersPage(QWidget):
@@ -136,7 +136,10 @@ class PresentersPage(QWidget):
         self.lbl_voice_model = QLabel(VOICE_MODEL_DEFAULT)
         self.lbl_voice_model.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.cmb_voice_id = QComboBox()
-        self.cmb_voice_id.addItems(VOICE_IDS)
+        for v in VOICE_OPTIONS:
+            self.cmb_voice_id.addItem(v.get("name", ""), v.get("id") or "")
+        if self.cmb_voice_id.count() > 0:
+            self.cmb_voice_id.setCurrentIndex(0)
         form.addRow("Voice model:", self.lbl_voice_model)
         form.addRow("Voice ID:", self.cmb_voice_id)
 
@@ -306,7 +309,8 @@ class PresentersPage(QWidget):
             QMessageBox.warning(self, "Validation", "Select at least one role.")
             return None
         voice_model = VOICE_MODEL_DEFAULT
-        voice_id = self.cmb_voice_id.currentText().strip()
+        voice_id_data = self.cmb_voice_id.currentData()
+        voice_id = str(voice_id_data or "").strip()
         if not voice_id:
             QMessageBox.warning(self, "Validation", "Voice ID is required.")
             return None
