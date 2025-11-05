@@ -320,7 +320,7 @@ class PresentersPage(QWidget):
             "schedules": schedules,
             "roles": roles,
             "voice_model": voice_model,
-            "model_id": voice_model,
+            "model_id": VOICE_MODEL_DEFAULT,
             "voice_id": voice_id,
         }
         return payload
